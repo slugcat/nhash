@@ -1,4 +1,9 @@
-// TODO IdentityHashMap did not cope with huge size in the way that HashMap did.  So do something to make this cope with huge size.  I wonder why tree node was used instead of sub hash tables.  If HashMap and IdentityMap were proper for small or large sizes why would they not be proper for sub-hashes?  The answer seems to be that using trees copes with poorly distributed hashCodes.
+// TODO This does not cope with poorly distributed key hash values as HashMap does in virtue of
+//  using Tree buckets when the buckets are large.  It may be possible to check everywhere if the
+//  key (or value?) were a tree-node, in which case use the bucket instead of looking at
+//  successive slots.  This is probably would not work exactly the same because the criteria for
+//  creating a bucket would be an excessively large probe count (as opposed to excessively large
+//  bucket).
 /*
  * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
@@ -38,7 +43,7 @@ import java.util.function.Consumer;
 /**
  * This class implements the {@code Map} interface with a hash table, using
  * reference-equality in place of object-equality when comparing keys (and
- * values).  In other words, in an {@code HashKeyHashMap}, two keys
+ * values).  In other words, in an {@code OpenHashMap}, two keys
  * {@code k1} and {@code k2} are considered equal if and only if
  * {@code (k1==k2)}.  (In normal {@code Map} implementations (like
  * {@code HashMap}) two keys {@code k1} and {@code k2} are considered equal
@@ -103,7 +108,7 @@ import java.util.function.Consumer;
  * {@link Collections#synchronizedMap Collections.synchronizedMap}
  * method.  This is best done at creation time, to prevent accidental
  * unsynchronized access to the map:<pre>
- *   Map m = Collections.synchronizedMap(new HashKeyHashMap(...));</pre>
+ *   Map m = Collections.synchronizedMap(new OpenHashMap(...));</pre>
  *
  * <p>The iterators returned by the {@code iterator} method of the
  * collections returned by all of this class's "collection view
@@ -147,7 +152,6 @@ import java.util.function.Consumer;
  * @see     HashMap
  * @see     TreeMap
  * @author  Doug Lea and Josh Bloch
- * @author  David Witten
  * @since   1.4
  */
 
@@ -201,7 +205,7 @@ at least the can't-be-null JEP is previewed.
 
  */
 
-public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
+public class OpenHashMap<K,V> extends AbstractMap<K,V>
     implements Map<K,V>, java.io.Serializable, Cloneable
 {
   /**
@@ -229,7 +233,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * because it has to have at least one slot with the key == null
    * in order to avoid infinite loops in get(), put(), remove()
    */
-  private static final int MAXIMUM_CAPACITY = 1 << 29;
+  private static final int MAXIMUM_CAPACITY = 1 << 29; // TODO don't know what this should be now.  "29" may be influenced by the 2 cells per key/value pair in IdentityHashMap.
 
   /**
    * The table, resized as necessary. Length MUST always be a power of two.
@@ -285,7 +289,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * Constructs a new, empty identity hash map with a default expected
    * maximum size (21).
    */
-  public HashKeyValueHashMap() {
+  public OpenHashMap() {
     init(DEFAULT_CAPACITY);
   }
 
@@ -298,7 +302,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * @param expectedMaxSize the expected maximum size of the map
    * @throws IllegalArgumentException if {@code expectedMaxSize} is negative
    */
-  public HashKeyValueHashMap(int expectedMaxSize) {
+  public OpenHashMap(int expectedMaxSize) {
     if (expectedMaxSize < 0)
       throw new IllegalArgumentException("expectedMaxSize is negative: "
           + expectedMaxSize);
@@ -313,7 +317,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * MAXIMUM_CAPACITY.
    */
   private static int capacity(int expectedMaxSize) {
-    // assert expectedMaxSize >= 0;
+    assert expectedMaxSize >= 0;
     return
         (expectedMaxSize > MAXIMUM_CAPACITY / 3) ? MAXIMUM_CAPACITY :
             (expectedMaxSize <= 2 * MINIMUM_CAPACITY / 3) ? MINIMUM_CAPACITY :
@@ -326,11 +330,11 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * MINIMUM_CAPACITY and MAXIMUM_CAPACITY inclusive.
    */
   private void init(int initCapacity) {
-    // assert (initCapacity & -initCapacity) == initCapacity; // power of 2
-    // assert initCapacity >= MINIMUM_CAPACITY;
-    // assert initCapacity <= MAXIMUM_CAPACITY;
+    assert (initCapacity & -initCapacity) == initCapacity; // power of 2
+    assert initCapacity >= MINIMUM_CAPACITY;
+    assert initCapacity <= MAXIMUM_CAPACITY;
 
-    table = new MaskedHashKeyValue[initCapacity];
+    table = MaskedHashKeyValue.createEmptyFilledArray(initCapacity);
   }
 
   /**
@@ -340,7 +344,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * @param m the map whose mappings are to be placed into this map
    * @throws NullPointerException if the specified map is null
    */
-  public HashKeyValueHashMap(Map<? extends K, ? extends V> m) {
+  public OpenHashMap(Map<? extends K, ? extends V> m) {
     // Allow for a bit of growth
     this((int) ((1 + m.size()) * 1.1));
     putAll(m);
@@ -370,6 +374,12 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * Returns index for Object x.
    */
   static int getIndex(int hashCode, int length) {
+    // TODO it seems wrong when the size is 2^24 to ignore the 1st byte and when the size is 2^8
+    //  to ignore the 1st and 3rd byte.  One would think the size would be included in the
+    //  expression in a way to account for this.  It may make sense for the index computation to
+    //  be more elaborate for open addressing.  IdentityHashMap.hash ensures tha hash is even
+    //  which this should not do.
+    //  This is taken from HashMap which does not have keys and values in distinct cells.
     return (hashCode ^ (hashCode >>> 16)) & (length - 1);
   }
 
@@ -377,7 +387,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * Circularly traverses table of size len.
    */
   private static int nextKeyIndex(int i, int len) {
-    return (i + 1 < len ? i + 1 : 0);
+    return (i + 1 < len ? i + 1 : 0); // TODO is this faster than using a mask as does https://github.com/TheNumbat/hashtables/blob/main/code/robin_hood_with_deletion.h#L40 ?
   }
 
   /**
@@ -406,7 +416,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     int i = getIndex(hash, len);
     while (true) {
       MaskedHashKeyValue item = tab[i];
-      if (item.maskedHash == hash && item.key.equals(k))
+      if (item.maskedHash == hash && Objects.equals(item.key, k))
         return (V) item.value;
       if (item.key == null)
         return null;
@@ -433,7 +443,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     int i = getIndex(hash, len);
     while (true) {
       MaskedHashKeyValue item = tab[i];
-      if (item.maskedHash == hash && item.key.equals(k))
+      if (item.maskedHash == hash && Objects.equals(item.key, k))
         return true;
       if (item.key == null)
         return false;
@@ -453,7 +463,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    */
   public boolean containsValue(Object value) {
     MaskedHashKeyValue[] tab = table;
-    for (int i = 1; i < tab.length; i++) {
+    for (int i = 0; i < tab.length; i++) {
       MaskedHashKeyValue item = tab[i];
       if (item.value == value && item.key != null)
         return true;
@@ -503,32 +513,55 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * @see     #containsKey(Object)
    */
   public V put(K key, V value) {
-    final Object k = maskNull(key);
-    final int hash = k.hashCode();
+    Object k = maskNull(key);
+    Object v = value;
+    int hash = k.hashCode();
 
+    // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
+    //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
+    //  when table-grows since growing is relatively rare.
     retryAfterResize: for (;;) {
-      final MaskedHashKeyValue/*TODO make null-restricted using ! everywhere*/[] tab = table;
+      final MaskedHashKeyValue/*TODO make null-restricted when this is available by using ! everywhere*/[] tab = table;
       final int len = tab.length;
       int i = getIndex(hash, len);
+      // A "Hop" is a probe after the initial index determined by the hash
+      // "Inserting" includes the initial item AND an item which has been displaced and thus
+      // needs to be re-inserted
+      int insertingKeyHops = 0;
 
       for (MaskedHashKeyValue item; (item = tab[i]).key != null;
            i = nextKeyIndex(i, len)) {
         if (item.maskedHash == hash && item.key.equals(k)) {
           @SuppressWarnings("unchecked")
           V oldValue = (V) tab[i].value;
-          tab[i] = new MaskedHashKeyValue(hash, k, value);
+          tab[i] = new MaskedHashKeyValue(hash, k, v);
           return oldValue;
         }
+        int desiredIndexForCurrentKey = getIndex(tab[i].key.hashCode(), len);
+        int currKeyHops = (i + len - desiredIndexForCurrentKey) & (len - 1);
+        if (currKeyHops < insertingKeyHops) {
+          // Swap
+          // TODO Does the "primitive" facility (or the null-restricted value facility) have a mechanism to assign some/all
+          //  of its fields to variables such that making a copy of the primitive is not required?  Or will java just optimize away
+          //  this intermediary assignment?
+          final MaskedHashKeyValue tmpMaskedHashKeyValue = tab[i];
+          tab[i] = new MaskedHashKeyValue(hash, k, v);
+          hash = tmpMaskedHashKeyValue.maskedHash;
+          k = tmpMaskedHashKeyValue.key;
+          v = tmpMaskedHashKeyValue.value;
+          insertingKeyHops = currKeyHops;
+        }
+        insertingKeyHops++;
       }
 
       final int s = size + 1;
       // Use optimized form of 3 * s.
-      // Next capacity is len, 2 * current capacity.
-      if (s + (s << 1) > len && resize(len))
+      // Next capacity is 2 * current capacity.
+      if (s + (s << 1) > len<<1 && resize(len<<1))
         continue retryAfterResize;
 
       modCount++;
-      tab[i] = new MaskedHashKeyValue(hash, k, value);
+      tab[i] = new MaskedHashKeyValue(hash, k, v);
       size = s;
       return null;
     }
@@ -541,12 +574,13 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * @return whether a resize did in fact take place
    */
   private boolean resize(int newCapacity) {
-    // assert (newCapacity & -newCapacity) == newCapacity; // power of 2
-    int newLength = newCapacity * 2;
+    // TODO comment out assertions
+    assert (newCapacity & -newCapacity) == newCapacity; // power of 2
+    int newLength = newCapacity; // TODO maybe don't need different vars for length and capacity everywhere since not putting keys/values in even/old slots
 
     MaskedHashKeyValue[] oldTable = table;
     int oldLength = oldTable.length;
-    if (oldLength == 2 * MAXIMUM_CAPACITY) { // can't expand any further
+    if (oldLength == MAXIMUM_CAPACITY) { // can't expand any further
       if (size == MAXIMUM_CAPACITY - 1)
         throw new IllegalStateException("Capacity exhausted.");
       return false;
@@ -554,14 +588,14 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     if (oldLength >= newLength)
       return false;
 
-    MaskedHashKeyValue[] newTable = new MaskedHashKeyValue[newLength];
+    MaskedHashKeyValue[] newTable = MaskedHashKeyValue.createEmptyFilledArray(newLength);
 
-    for (int j = 0; j < oldLength; j += 2) {
+    for (int j = 0; j < oldLength; j++) {
       MaskedHashKeyValue oldElem = oldTable[j];
       if (oldElem.key != null) {
         oldTable[j] = MaskedHashKeyValue.EMPTY;
         int i = getIndex(oldElem.maskedHash, newLength);
-        while (newTable[i] != null)
+        while (newTable[i].key != null)
           i = nextKeyIndex(i, newLength);
         newTable[i] = oldElem;
       }
@@ -587,7 +621,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     if (n > size)
       resize(capacity(n)); // conservatively pre-expand
 
-    // TODO optimize setting of hashKey if m is a HashKeyValueHashMap?
+    // TODO optimize setting of hashKey if m is a OpenHashMap?
     for (Entry<? extends K, ? extends V> e : m.entrySet())
       put(e.getKey(), e.getValue());
   }
@@ -716,7 +750,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * possible that the symmetry and transitivity requirements of the
    * {@code Object.equals} contract may be violated if this map is compared
    * to a normal map.  However, the {@code Object.equals} contract is
-   * guaranteed to hold among {@code HashKeyHashMap} instances.</b>
+   * guaranteed to hold among {@code OpenHashMap} instances.</b>
    *
    * @param  o object to be compared for equality with this map
    * @return {@code true} if the specified object is equal to this map
@@ -725,7 +759,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   public boolean equals(Object o) {
     if (o == this) {
       return true;
-    } else if (o instanceof HashKeyValueHashMap<?, ?> m) {
+    } else if (o instanceof OpenHashMap<?, ?> m) {
       if (m.size() != size)
         return false;
 
@@ -749,7 +783,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * defined to be the sum of the hash codes of each entry in the map's
    * {@code entrySet()} view.  This ensures that {@code m1.equals(m2)}
    * implies that {@code m1.hashCode()==m2.hashCode()} for any two
-   * {@code HashKeyHashMap} instances {@code m1} and {@code m2}, as
+   * {@code OpenHashMap} instances {@code m1} and {@code m2}, as
    * required by the general contract of {@link Object#hashCode}.
    *
    * <p><b>Owing to the reference-equality-based semantics of the
@@ -757,7 +791,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * {@code entrySet} method, it is possible that the contractual
    * requirement of {@code Object.hashCode} mentioned in the previous
    * paragraph will be violated if one of the two objects being compared is
-   * an {@code HashKeyHashMap} instance and the other is a normal map.</b>
+   * an {@code OpenHashMap} instance and the other is a normal map.</b>
    *
    * @return the hash code value for this map
    * @see Object#equals(Object)
@@ -783,7 +817,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    */
   public Object clone() {
     try {
-      HashKeyValueHashMap<?,?> m = (HashKeyValueHashMap<?,?>) super.clone();
+      OpenHashMap<?,?> m = (OpenHashMap<?,?>) super.clone();
       m.entrySet = null;
       m.table = table.clone();
       return m;
@@ -792,7 +826,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
   }
 
-  private abstract class HashKeyValueHashMapIterator<T> implements Iterator<T> {
+  private abstract class OpenHashMapIterator<T> implements Iterator<T> {
     int index = (size != 0 ? 0 : table.length); // current slot.
     int expectedModCount = modCount; // to support fast-fail
     int lastReturnedIndex = -1;      // to allow remove()
@@ -811,7 +845,6 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       index = tab.length;
       return false;
     }
-
     protected int nextIndex() {
       if (modCount != expectedModCount)
         throw new ConcurrentModificationException();
@@ -858,8 +891,8 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
 
       // If traversing a copy, remove in real table.
       // We can skip gap-closure on copy.
-      if (tab != HashKeyValueHashMap.this.table) {
-        HashKeyValueHashMap.this.remove(key);
+      if (tab != OpenHashMap.this.table) {
+        OpenHashMap.this.remove(key);
         expectedModCount = modCount;
         return;
       }
@@ -882,9 +915,9 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
           // be used for searching anyway.
 
           if (i < deletedSlot && d >= deletedSlot &&
-              traversalTable == HashKeyValueHashMap.this.table) {
+              traversalTable == OpenHashMap.this.table) {
             int remaining = len - deletedSlot;
-            MaskedHashKeyValue[] newTable = new MaskedHashKeyValue[remaining];
+            MaskedHashKeyValue[] newTable = MaskedHashKeyValue.createEmptyFilledArray(remaining);
             System.arraycopy(tab, deletedSlot,
                 newTable, 0, remaining);
             traversalTable = newTable;
@@ -899,14 +932,14 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
   }
 
-  private class KeyIterator extends HashKeyValueHashMapIterator<K> {
+  private class KeyIterator extends OpenHashMapIterator<K> {
     @SuppressWarnings("unchecked")
     public K next() {
       return (K) unmaskNull(traversalTable[nextIndex()].key);
     }
   }
 
-  private class ValueIterator extends HashKeyValueHashMapIterator<V> {
+  private class ValueIterator extends OpenHashMapIterator<V> {
     @SuppressWarnings("unchecked")
     public V next() {
       return (V) traversalTable[nextIndex()].value;
@@ -914,7 +947,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   }
 
   private class EntryIterator
-      extends HashKeyValueHashMapIterator<Entry<K,V>>
+      extends OpenHashMapIterator<Entry<K,V>>
   {
     private Entry lastReturnedEntry;
 
@@ -957,14 +990,14 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
         V oldValue = (V) item.value;
         traversalTable[index] = new MaskedHashKeyValue(item.maskedHash, item.key, value);
         // if shadowing, force into main table
-        if (traversalTable != HashKeyValueHashMap.this.table)
+        if (traversalTable != OpenHashMap.this.table)
           put((K) traversalTable[index].key, value);
         return oldValue;
       }
 
       public boolean equals(Object o) {
-        if (index < 0)
-          return super.equals(o);
+        if (o == this)
+          return true;
 
         return o instanceof Map.Entry<?, ?> e
             && Objects.equals(e.getKey(), unmaskNull(traversalTable[index].key))
@@ -972,17 +1005,11 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       }
 
       public int hashCode() {
-        if (lastReturnedIndex < 0)
-          return super.hashCode();
-
         final MaskedHashKeyValue item = traversalTable[index];
         return itemUnmaskedKeyHash(item) ^ Objects.hashCode(item.value);
       }
 
       public String toString() {
-        if (index < 0)
-          return super.toString();
-
         return (unmaskNull(traversalTable[index].key) + "="
             + traversalTable[index].value);
       }
@@ -1063,10 +1090,10 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
     public boolean remove(Object o) {
       int oldSize = size;
-      HashKeyValueHashMap.this.remove(o);
+      OpenHashMap.this.remove(o);
       return size != oldSize;
     }
-    // TODO remove this commented out func.  Given this is not identity-based it should be safe to omit this
+    // TODO remove this commented out func.  Given this is not identity-based it should be safe to omit this and use inherited
 //    /*
 //     * Must revert from AbstractSet's impl to AbstractCollection's, as
 //     * the former contains an optimization that results in incorrect
@@ -1084,7 +1111,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
 //      return modified;
 //    }
     public void clear() {
-      HashKeyValueHashMap.this.clear();
+      OpenHashMap.this.clear();
     }
     public int hashCode() {
       int result = 0;
@@ -1125,7 +1152,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
 
     public Spliterator<K> spliterator() {
-      return new KeySpliterator<>(HashKeyValueHashMap.this, 0, -1, 0, 0);
+      return new KeySpliterator<>(OpenHashMap.this, 0, -1, 0, 0);
     }
   }
 
@@ -1179,7 +1206,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       return false;
     }
     public void clear() {
-      HashKeyValueHashMap.this.clear();
+      OpenHashMap.this.clear();
     }
     public Object[] toArray() {
       return toArray(new Object[0]);
@@ -1213,7 +1240,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
 
     public Spliterator<V> spliterator() {
-      return new ValueSpliterator<>(HashKeyValueHashMap.this, 0, -1, 0, 0);
+      return new ValueSpliterator<>(OpenHashMap.this, 0, -1, 0, 0);
     }
   }
 
@@ -1282,7 +1309,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       return size;
     }
     public void clear() {
-      HashKeyValueHashMap.this.clear();
+      OpenHashMap.this.clear();
     }
     /*
      * Must revert from AbstractSet's impl to AbstractCollection's, as
@@ -1336,7 +1363,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
 
     public Spliterator<Entry<K,V>> spliterator() {
-      return new EntrySpliterator<>(HashKeyValueHashMap.this, 0, -1, 0, 0);
+      return new EntrySpliterator<>(OpenHashMap.this, 0, -1, 0, 0);
     }
   }
 
@@ -1344,13 +1371,13 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   private static final long serialVersionUID = 8188218128353913216L;
 
   /**
-   * Saves the state of the {@code HashKeyHashMap} instance to a stream
+   * Saves the state of the {@code OpenHashMap} instance to a stream
    * (i.e., serializes it).
    *
    * @serialData The <i>size</i> of the HashMap (the number of key-value
    *          mappings) ({@code int}), followed by the key (Object) and
    *          value (Object) for each key-value mapping represented by the
-   *          HashKeyHashMap.  The key-value mappings are emitted in no
+   *          OpenHashMap.  The key-value mappings are emitted in no
    *          particular order.
    */
   @java.io.Serial
@@ -1373,7 +1400,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   }
 
   /**
-   * Reconstitutes the {@code HashKeyHashMap} instance from a stream (i.e.,
+   * Reconstitutes the {@code OpenHashMap} instance from a stream (i.e.,
    * deserializes it).
    */
   @java.io.Serial
@@ -1417,7 +1444,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     int i = getIndex(keyHash, len);
 
     MaskedHashKeyValue item;
-    while ( (item = tab[i]) != null) {
+    while ( (item = tab[i]).key != null) {
       if (item.key.equals(k))
         throw new java.io.StreamCorruptedException();
       i = nextKeyIndex(i, len);
@@ -1512,15 +1539,15 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
    * Similar form as array-based Spliterators, but skips blank elements,
    * and guestimates size as decreasing by half per split.
    */
-  static class HashKeyValueHashMapSpliterator<K,V> {
-    final HashKeyValueHashMap<K,V> map;
+  static class OpenHashMapSpliterator<K,V> {
+    final OpenHashMap<K,V> map;
     int index;             // current index, modified on advance/split
     int fence;             // -1 until first use; then one past last index
     int est;               // size estimate
     int expectedModCount;  // initialized when fence set
 
-    HashKeyValueHashMapSpliterator(HashKeyValueHashMap<K,V> map, int origin,
-                                   int fence, int est, int expectedModCount) {
+    OpenHashMapSpliterator(OpenHashMap<K,V> map, int origin,
+                           int fence, int est, int expectedModCount) {
       this.map = map;
       this.index = origin;
       this.fence = fence;
@@ -1545,10 +1572,10 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   }
 
   static final class KeySpliterator<K,V>
-      extends HashKeyValueHashMapSpliterator<K,V>
+      extends OpenHashMapSpliterator<K,V>
       implements Spliterator<K> {
-    KeySpliterator(HashKeyValueHashMap<K,V> map, int origin, int fence, int est,
-             int expectedModCount) {
+    KeySpliterator(OpenHashMap<K,V> map, int origin, int fence, int est,
+                   int expectedModCount) {
       super(map, origin, fence, est, expectedModCount);
     }
 
@@ -1564,7 +1591,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       if (action == null)
         throw new NullPointerException();
       int i, hi, mc; Object key;
-      HashKeyValueHashMap<K,V> m; MaskedHashKeyValue[] a;
+      OpenHashMap<K,V> m; MaskedHashKeyValue[] a;
       if ((m = map) != null && (a = m.table) != null &&
           (i = index) >= 0 && (index = hi = getFence()) <= a.length) {
         for (; i < hi; i++) {
@@ -1602,10 +1629,10 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   }
 
   static final class ValueSpliterator<K,V>
-      extends HashKeyValueHashMapSpliterator<K,V>
+      extends OpenHashMapSpliterator<K,V>
       implements Spliterator<V> {
-    ValueSpliterator(HashKeyValueHashMap<K,V> m, int origin, int fence, int est,
-        int expectedModCount) {
+    ValueSpliterator(OpenHashMap<K,V> m, int origin, int fence, int est,
+                     int expectedModCount) {
       super(m, origin, fence, est, expectedModCount);
     }
 
@@ -1620,7 +1647,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       if (action == null)
         throw new NullPointerException();
       int i, hi, mc;
-      HashKeyValueHashMap<K,V> m; MaskedHashKeyValue[] a;
+      OpenHashMap<K,V> m; MaskedHashKeyValue[] a;
       if ((m = map) != null && (a = m.table) != null &&
           (i = index) >= 0 && (index = hi = getFence()) <= a.length) {
         for (; i < hi; i++) {
@@ -1661,10 +1688,10 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
   }
 
   static final class EntrySpliterator<K,V>
-      extends HashKeyValueHashMapSpliterator<K,V>
+      extends OpenHashMapSpliterator<K,V>
       implements Spliterator<Map.Entry<K,V>> {
-    EntrySpliterator(HashKeyValueHashMap<K,V> m, int origin, int fence, int est,
-        int expectedModCount) {
+    EntrySpliterator(OpenHashMap<K,V> m, int origin, int fence, int est,
+                     int expectedModCount) {
       super(m, origin, fence, est, expectedModCount);
     }
 
@@ -1679,7 +1706,7 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
       if (action == null)
         throw new NullPointerException();
       int i, hi, mc;
-      HashKeyValueHashMap<K,V> m; MaskedHashKeyValue[] a;
+      OpenHashMap<K,V> m; MaskedHashKeyValue[] a;
       if ((m = map) != null && (a = m.table) != null &&
           (i = index) >= 0 && (index = hi = getFence()) <= a.length) {
         for (; i < hi; i++) {
@@ -1725,17 +1752,27 @@ public class HashKeyValueHashMap<K,V> extends AbstractMap<K,V>
     }
   }
 
-  static final /*TODO primitive*/ class MaskedHashKeyValue {
+  static final boolean NO_PRIMITIVE = true; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
+  static final /*TODO uncomment primitive*/ class MaskedHashKeyValue {
     final int maskedHash;
-    final Object key; // TODO make this K if possible.  To do so must deal with NULL_KEY
-    final Object value; // TODO make this V if possible.
+    // TODO rename to maskedKey, and parameters.
+    final Object key; // TODO make the type be K if possible.  To do so must deal with NULL_KEY
+    final Object value; // TODO make the type be V if possible.
 
-    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null);
+    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null)/* TODO uncomment: MaskedHashKeyValue.default*/;
 
     MaskedHashKeyValue(int maskedHash, Object key, Object value) {
       this.maskedHash = maskedHash;
       this.key = key;
       this.value = value;
+    }
+
+    static MaskedHashKeyValue[] createEmptyFilledArray(int len) {
+      final MaskedHashKeyValue[] array = new MaskedHashKeyValue[len];
+      if (NO_PRIMITIVE) {
+        Arrays.fill(array, EMPTY);
+      }
+      return array;
     }
   }
 }
@@ -1790,3 +1827,62 @@ https://cr.openjdk.org/~skuksenko/valhalla/hashmaps/hash.html
 Reconsider the computation of the hash modulo equivalent. The current one does a bad job if the size is less than 2^16.  See if there's a way to use bitwise operations to take account of the current size when doing this salting.
 
  */
+
+// TODO unlike HashMap this does not currently throw a ConcurrentModificationException for the compute* or merge functions.  I don't know why IdentityHashMap (from whence this implementation was derived) does not do this, so it needs to be investigated whether implementing CME in this class is feasible.
+
+// TODO BasicSerialization test is failing.
+
+// TODO Develop lazy add methods that wrap maps and sets
+//  Just append to a list|rope until any fetch is done.  More optimal to have a lazy mode and a
+//  non lazy mode in lazy mode it is legal to call put laserly and the modes are enforced by
+//  having the pointer to the data structure for example the pointer to the hash table array or
+//  the pointer to the rope you know and then catch it such that if cricket is never called in
+//  lazy mode there will be no cost for if checks
+
+// TODO The performance test should run multiple threads each with distinct keys and
+//  values.  I think the keys should be Strings since that is more common; it
+//  will also help to consume cache.  When lookup is done it should use
+//  distinct keys (with the same content) to show the benefit (at least vs
+//  future potential implementations of comparing with key's hashcode 1st, as
+//  does the proposed implementation.  aOnly run one Map implementation at a
+//  time, in multiple threads.  In this way the impact of the cache effeciency
+//  of an implementation for other threads is accounted for.  That is a more
+//  cache-efficient implementation will allow other threads more cache for
+//  their memory needs.
+
+// TODO I'm concerned that using Integers may allow the jvm to optimize the equals comparison such that it won't indirect off the Integer object (though I don't see how it could do this).
+
+/* TODO document computer specs:
+L1 Cache: 512KB
+L2 Cache: 4MB
+L3 Cache: 16MB
+# of CPU Cores: 8
+# of Threads: 16
+AMD Ryzen™ 9 6900HX
+AMD Ryzen™ 9 Mobile Processors with Radeon™ Graphics
+Base Clock: 3.3GHz
+Max. Boost Clock Up to 4.9GHz
+16MB
+
+The original large number is 1/2 capacity, and is large enough to make cache misses happen almost all the time.  There
+
+
+So goal is to have Maps at least large enough such that (almost) every 'get' will non-cache memory.  Since each fetch will hit a random cache line, and a cache line is 64 bytes the so there are 1048576 / 4 == 262144 a fetch of a 16MB array will almost always (1 out of be a miss.
+16 * 1048576
+167772166
+16777216  / (4 bytes per field * 3 fields)
+numElementsToFillCache 1398101.33333 Having this many items will fill cache.
+So this * 100 means there will be a cache hit 1/100th of the time.
+Since the table doubles each time it grows, and it grows when it hits 2/3 capacity then after growth it is at 1/3 capacity.  So on average it is at 1/2 capacity.  So make the number of elements in 'get' benchmarks be at 1/2 capacity to demonstrate average behavior for non-presized Maps.
+
+So 1.5 * the least power of 2 that can roughly hold numElementsToFillCache will give average performance
+
+1.5 * 134217728 ==
+
+201,326,592
+201326592  // This was too big so trying 1/2 of this:
+
+
+A similar result would be achieved by dividing this the number of threads where each thread had a distinct map with distinct keys.  Ideally the number of threads would be such that the none of the threads get context switched.
+
+*/
