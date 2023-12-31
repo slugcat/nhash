@@ -414,12 +414,20 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     MaskedHashKeyValue[] tab = table;
     int len = tab.length;
     int i = getIndex(hash, len);
+    int keyHops = 0;
     while (true) {
       MaskedHashKeyValue item = tab[i];
       if (item.maskedHash == hash && Objects.equals(item.key, k))
         return (V) item.value;
       if (item.key == null)
         return null;
+      final int desiredIndexForCurrentKey = getIndex(item.maskedHash, len);
+      final int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
+      if (currKeyHops < keyHops) {
+        return null;
+      }
+      keyHops++;
+
       i = nextKeyIndex(i, len);
     }
   }
@@ -513,15 +521,22 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
    * @see     #containsKey(Object)
    */
   public V put(K key, V value) {
-    Object k = maskNull(key);
-    Object v = value;
-    int hash = k.hashCode();
+    return (V) put0(maskNull(key), value, table, true, true, false, true); // TODO @SuppressWarnings("unchecked")
+
+  }
+
+  // TODO is the overhead of calling this as a separate method plus the checkForDuplicate large
+  //  enough to inline this where it is called?
+  Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean checkKeyCanBePresentAlready, boolean tableMayNeedResizing, boolean isCopying, boolean allowResize) {
+    int hash = maskedKey.hashCode();
+    // A "Hop" is a probe after the initial index determined by the hash
+    // "Inserting" includes the initial item AND an item which has been displaced and thus
+    // needs to be re-inserted
 
     // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
     //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
     //  when table-grows since growing is relatively rare.
     retryAfterResize: for (;;) {
-      final MaskedHashKeyValue/*TODO make null-restricted when this is available by using ! everywhere*/[] tab = table;
       final int len = tab.length;
       int i = getIndex(hash, len);
       // A "Hop" is a probe after the initial index determined by the hash
@@ -531,24 +546,24 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
 
       for (MaskedHashKeyValue item; (item = tab[i]).key != null;
            i = nextKeyIndex(i, len)) {
-        if (item.maskedHash == hash && item.key.equals(k)) {
-          @SuppressWarnings("unchecked")
-          V oldValue = (V) tab[i].value;
-          tab[i] = new MaskedHashKeyValue(hash, k, v);
+        if (checkKeyCanBePresentAlready && item.maskedHash == hash && item.key.equals(maskedKey)) {
+          Object oldValue = item.value;
+          tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
           return oldValue;
         }
         int desiredIndexForCurrentKey = getIndex(tab[i].key.hashCode(), len);
-        int currKeyHops = (i + len - desiredIndexForCurrentKey) & (len - 1);
+        int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
         if (currKeyHops < insertingKeyHops) {
+          // TODO Does the "primitive" facility (or the null-restricted value facility) have a
+          //  mechanism to assign some/all of its fields to variables such that making a copy of
+          //  the primitive is not required?  Or will java just optimize away this intermediary
+          //  assignment?
           // Swap
-          // TODO Does the "primitive" facility (or the null-restricted value facility) have a mechanism to assign some/all
-          //  of its fields to variables such that making a copy of the primitive is not required?  Or will java just optimize away
-          //  this intermediary assignment?
           final MaskedHashKeyValue tmpMaskedHashKeyValue = tab[i];
-          tab[i] = new MaskedHashKeyValue(hash, k, v);
+          tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
           hash = tmpMaskedHashKeyValue.maskedHash;
-          k = tmpMaskedHashKeyValue.key;
-          v = tmpMaskedHashKeyValue.value;
+          maskedKey = tmpMaskedHashKeyValue.key;
+          value = tmpMaskedHashKeyValue.value;
           insertingKeyHops = currKeyHops;
         }
         insertingKeyHops++;
@@ -557,14 +572,55 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
       final int s = size + 1;
       // Use optimized form of 3 * s.
       // Next capacity is 2 * current capacity.
-      if (s + (s << 1) > len<<1 && resize(len<<1))
-        continue retryAfterResize;
-
-      modCount++;
-      tab[i] = new MaskedHashKeyValue(hash, k, v);
-      size = s;
+      if (tableMayNeedResizing) {
+        if (s + (s << 1) > len << 1 && resize(len << 1)) {
+          tab = table;
+          continue retryAfterResize;
+        }
+      }
+      tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
+      if (!isCopying) // TODO do something about these boolean params
+        modCount++;
+      if (allowResize)
+        size = s;
       return null;
     }
+  }
+
+  public String dump() {
+    MaskedHashKeyValue[] tab = table; // TODO remove var if don't make a dump that takes a table param
+    StringBuilder buf = new StringBuilder(tab.length*20);
+    buf.append(STR."size: \{size}  capacity:\{tab.length}\n");
+    List<Object[]> data = new ArrayList<>();
+    data.add(new String[] {"i", "want-i", "hops", "key", "value"});
+    for (int i = 0; i < tab.length; i++) {
+      final int index = getIndex(tab[i].maskedHash, tab.length);
+      data.add(new Object[]{i, index, getHops(i, tab.length,index), tab[i].key, tab[i].value});
+    }
+    printTable(buf, data);
+    return buf.toString();
+  }
+
+  public static String printTable(StringBuilder buf, List<Object[]> data) {
+    final int numCols = data.get(0).length;
+    int[] maxLengths = new int[numCols];
+    for (int col = 0; col < numCols; col++) {
+      for (int row = 0; row < data.size(); row++) {
+        String str = Objects.toString(data.get(row)[col]);
+        maxLengths[col] = Math.max(maxLengths[col], str.length());
+      }
+    }
+    for (int row = 0; row < data.size(); row++) {
+      for (int col = 0; col < numCols; col++) {
+        buf.append(String.format("%" + maxLengths[col] + "s ", data.get(row)[col]));
+      }
+      buf.append("\n");
+    }
+    return buf.toString();
+  }
+
+  private static int getHops(int i, int len, int desiredIndexForCurrentKey) {
+    return (i + len - desiredIndexForCurrentKey) & (len - 1);
   }
 
   /**
@@ -575,8 +631,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
    */
   private boolean resize(int newCapacity) {
     // TODO comment out assertions
-    assert (newCapacity & -newCapacity) == newCapacity; // power of 2
-    int newLength = newCapacity; // TODO maybe don't need different vars for length and capacity everywhere since not putting keys/values in even/old slots
+    assert (newCapacity & -newCapacity) == newCapacity : "Should be power of 2";
 
     MaskedHashKeyValue[] oldTable = table;
     int oldLength = oldTable.length;
@@ -585,19 +640,15 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
         throw new IllegalStateException("Capacity exhausted.");
       return false;
     }
-    if (oldLength >= newLength)
+    if (oldLength >= newCapacity)
       return false;
 
-    MaskedHashKeyValue[] newTable = MaskedHashKeyValue.createEmptyFilledArray(newLength);
+    MaskedHashKeyValue[] newTable = MaskedHashKeyValue.createEmptyFilledArray(newCapacity);
 
     for (int j = 0; j < oldLength; j++) {
       MaskedHashKeyValue oldElem = oldTable[j];
       if (oldElem.key != null) {
-        oldTable[j] = MaskedHashKeyValue.EMPTY;
-        int i = getIndex(oldElem.maskedHash, newLength);
-        while (newTable[i].key != null)
-          i = nextKeyIndex(i, newLength);
-        newTable[i] = oldElem;
+        put0(oldElem.key, oldElem.value, newTable, false, false, true, false);
       }
     }
     table = newTable;
@@ -891,6 +942,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
 
       // If traversing a copy, remove in real table.
       // We can skip gap-closure on copy.
+      // TODO it may not be safe to skip gap-closure for robin hood.  It at least merits trying to keep it to see if it makes the tests work.
       if (tab != OpenHashMap.this.table) {
         OpenHashMap.this.remove(key);
         expectedModCount = modCount;
@@ -1437,19 +1489,10 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
   private void putForCreate(K key, V value)
       throws java.io.StreamCorruptedException
   {
-    Object k = maskNull(key);
-    int keyHash = k.hashCode();
-    MaskedHashKeyValue[] tab = table;
-    int len = tab.length;
-    int i = getIndex(keyHash, len);
-
-    MaskedHashKeyValue item;
-    while ( (item = tab[i]).key != null) {
-      if (item.key.equals(k))
-        throw new java.io.StreamCorruptedException();
-      i = nextKeyIndex(i, len);
+    if (put0(maskNull(key), value, table, true, false, true, true) == null
+        && containsKey(unmaskNull(key))) {
+      throw new java.io.StreamCorruptedException();
     }
-    tab[i] = new MaskedHashKeyValue(keyHash, k, value);
   }
 
   @SuppressWarnings("unchecked")

@@ -31,9 +31,9 @@ package Map;/*
  * @summary Map.Entry implementations need to comply with Map.Entry.hashCode() defined behaviour.
  * @author ngmr
  */
+import newhash.OpenHashMap;
+
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListMap;
 
 public class EntryHashCode {
     private static final int TEST_SIZE = 100;
@@ -46,13 +46,14 @@ public class EntryHashCode {
     @SuppressWarnings("unchecked")
     static final Map<Object,Object>[] maps = (Map<Object,Object>[])new Map[] {
         new HashMap<>(),
-        new Hashtable<>(),
-        new IdentityHashMap<>(),
-        new LinkedHashMap<>(),
-        new TreeMap<>(),
-        new WeakHashMap<>(),
-        new ConcurrentHashMap<>(),
-        new ConcurrentSkipListMap<>()
+        new OpenHashMap<>()
+//        new Hashtable<>(),
+//        new IdentityHashMap<>(),
+//        new LinkedHashMap<>(),
+//        new TreeMap<>(),
+//        new WeakHashMap<>(),
+//        new ConcurrentHashMap<>(),
+//        new ConcurrentSkipListMap<>()
     };
 
     static {

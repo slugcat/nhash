@@ -29,6 +29,7 @@ package Map;/*
  * @author Mike Duigou
  */
 
+import newhash.OpenHashMap;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -178,6 +179,7 @@ public class BasicSerialization {
         return Arrays.asList(
             // empty
             new Object[]{"HashMap", new HashMap()},
+            new Object[]{"OpenHashMap", new OpenHashMap()},
             new Object[]{"LinkedHashMap", new LinkedHashMap()},
             new Object[]{"Collections.checkedMap(HashMap)", Collections.checkedMap(new HashMap(), IntegerEnum.class, String.class)},
             new Object[]{"Collections.synchronizedMap(HashMap)", Collections.synchronizedMap(new HashMap())},
@@ -191,6 +193,7 @@ public class BasicSerialization {
             new Object[]{"Collections.synchronizedMap(EnumMap)", Collections.synchronizedMap(new EnumMap(IntegerEnum.class))},
             // filled
             new Object[]{"HashMap", fillMap(new HashMap())},
+            new Object[]{"OpenHashMap", fillMap(new OpenHashMap())},
             new Object[]{"LinkedHashMap", fillMap(new LinkedHashMap())},
             new Object[]{"Collections.checkedMap(HashMap)", Collections.checkedMap(fillMap(new HashMap()), IntegerEnum.class, String.class)},
             new Object[]{"Collections.synchronizedMap(HashMap)", Collections.synchronizedMap(fillMap(new HashMap()))},

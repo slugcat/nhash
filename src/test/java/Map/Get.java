@@ -28,7 +28,7 @@ package Map;/*
  * @author Martin Buchholz
  */
 
-import newhash.HashFieldHashMap;
+import newhash.OpenHashMap;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
@@ -37,8 +37,7 @@ public class Get {
 
     private static void realMain(String[] args) throws Throwable {
         testMap(new HashMap<Character,Boolean>());
-        testMap(new HashFieldHashMap<Character,Boolean>());
-
+        testMap(new OpenHashMap<Character,Boolean>());
     }
 
     private static void put(Map<Character,Boolean> m,

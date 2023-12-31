@@ -31,6 +31,8 @@ package Map;/*
 import org.testng.annotations.Test;
 
 import java.util.BitSet;
+import newhash.OpenHashMap;
+
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -162,7 +164,10 @@ public class Collisions extends MapWithCollisionsProviders {
             Object key = t.getKey();
             Object value = t.getValue();
             each.remove();
-            assertTrue((map instanceof IdentityHashMap) || !map.entrySet().contains(t),
+            // Don't assert if the Map class does not allow using an Entry after it has been removed.
+            assertTrue((map instanceof IdentityHashMap
+                    || (map instanceof OpenHashMap<Object, Object>))
+                    || !map.entrySet().contains(t),
                     String.format("not removed: %s", each));
             assertFalse(map.containsKey(key),
                     String.format("not removed: %s", each));

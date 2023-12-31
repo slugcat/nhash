@@ -27,6 +27,8 @@ package Map;/*
  * @summary Ensure toArray() implementations return correct results.
  * @author Mike Duigou
  */
+import newhash.OpenHashMap;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -41,6 +43,7 @@ public class ToArray {
     private static void realMain(String[] args) throws Throwable {
         Map<Integer, Long>[] maps = (Map<Integer, Long>[]) new Map[]{
                     new HashMap<>(),
+                    new OpenHashMap<>(),
                     new Hashtable<>(),
                     new IdentityHashMap<>(),
                     new LinkedHashMap<>(),

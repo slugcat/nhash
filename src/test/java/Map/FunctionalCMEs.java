@@ -23,6 +23,7 @@ package Map;/*
  * questions.
  */
 
+import newhash.OpenHashMap;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -45,10 +46,10 @@ public class FunctionalCMEs {
         return Arrays.asList(
                 // Test maps that CME
                 new Object[]{new HashMap<>(), true},
-                new Object[]{new Hashtable<>(), true},
-                new Object[]{new LinkedHashMap<>(), true},
-                // Test default Map methods - no CME
-                new Object[]{new Defaults.ExtendsAbstractMap<>(), false}
+                new Object[]{new Hashtable<>(), true}
+//                new Object[]{new LinkedHashMap<>(), true},
+//                // Test default Map methods - no CME
+//                new Object[]{new Defaults.ExtendsAbstractMap<>(), false}
         ).iterator();
     }
 

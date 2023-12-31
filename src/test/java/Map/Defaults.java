@@ -29,7 +29,7 @@ package Map;/*
  * @run testng Defaults
  */
 
-import org.testng.Assert.*;
+import newhash.OpenHashMap;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -695,7 +695,9 @@ public class Defaults {
 
     public enum IntegerEnum {
 
-        e0, e1, e2, e3, e4, e5, e6, e7, e8, e9,
+        e0, e1, e2, e3, e4,
+
+        e5, e6, e7, e8, e9,
         e10, e11, e12, e13, e14, e15, e16, e17, e18, e19,
         e20, e21, e22, e23, e24, e25, e26, e27, e28, e29,
         e30, e31, e32, e33, e34, e35, e36, e37, e38, e39,
@@ -705,6 +707,7 @@ public class Defaults {
         e70, e71, e72, e73, e74, e75, e76, e77, e78, e79,
         e80, e81, e82, e83, e84, e85, e86, e87, e88, e89,
         e90, e91, e92, e93, e94, e95, e96, e97, e98, e99,
+
         EXTRA_KEY;
         public static final int SIZE = values().length;
     }
@@ -823,13 +826,9 @@ public class Defaults {
      */
     private static Collection<Object[]> makeRWMaps(boolean nullKeys, boolean nullValues) {
         return Arrays.asList(
-            new Object[]{"HashMap", makeMap(HashMap::new, nullKeys, nullValues)},
-            new Object[]{"IdentityHashMap", makeMap(IdentityHashMap::new, nullKeys, nullValues)},
-            new Object[]{"LinkedHashMap", makeMap(LinkedHashMap::new, nullKeys, nullValues)},
-            new Object[]{"WeakHashMap", makeMap(WeakHashMap::new, nullKeys, nullValues)},
-            new Object[]{"Collections.checkedMap(HashMap)", Collections.checkedMap(makeMap(HashMap::new, nullKeys, nullValues), IntegerEnum.class, String.class)},
-            new Object[]{"Collections.synchronizedMap(HashMap)", Collections.synchronizedMap(makeMap(HashMap::new, nullKeys, nullValues))},
-            new Object[]{"ExtendsAbstractMap", makeMap(ExtendsAbstractMap::new, nullKeys, nullValues)});
+            new Object[]{"OpenHashMap", makeMap( () -> new OpenHashMap(4), nullKeys, nullValues)},
+            new Object[]{"HashMap", makeMap(HashMap::new, nullKeys, nullValues)}
+            );
     }
 
     /**

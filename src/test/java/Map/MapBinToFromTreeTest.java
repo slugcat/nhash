@@ -21,6 +21,7 @@ package Map;/*
  * questions.
  */
 
+import newhash.OpenHashMap;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 

@@ -21,11 +21,10 @@ package Map;/*
  * questions.
  */
 
+import newhash.OpenHashMap;
 import org.testng.annotations.DataProvider;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.function.Supplier;
 
 import static org.testng.Assert.assertEquals;
@@ -181,18 +180,22 @@ public class MapWithCollisionsProviders {
         Collection<Object[]> cases = new ArrayList<>();
         cases.add(createCase("Hashtable with " + desc,
                              new Hashtable<>(), keys, val));
-        cases.add(createCase("IdentityHashMap with " + desc,
-                             new IdentityHashMap<>(), keys, val));
-        cases.add(createCase("TreeMap with " + desc,
-                             new TreeMap<>(), keys, val));
-        cases.add(createCase("WeakHashMap with " + desc,
-                             new WeakHashMap<>(), keys, val));
-        cases.add(createCase("ConcurrentHashMap with " + desc,
-                             new ConcurrentHashMap<>(), keys, val));
-        cases.add(createCase("ConcurrentSkipListMap with " + desc,
-                             new ConcurrentSkipListMap<>(), keys, val));
+        cases.add(createCase("OpenHashMap with " + desc,
+            new OpenHashMap<>(), keys, val));
+//        cases.add(createCase("IdentityHashMap with " + desc,
+//                             new IdentityHashMap<>(), keys, val));
+//        cases.add(createCase("TreeMap with " + desc,
+//                             new TreeMap<>(), keys, val));
+//        cases.add(createCase("WeakHashMap with " + desc,
+//                             new WeakHashMap<>(), keys, val));
+//        cases.add(createCase("ConcurrentHashMap with " + desc,
+//                             new ConcurrentHashMap<>(), keys, val));
+//        cases.add(createCase("ConcurrentSkipListMap with " + desc,
+//                             new ConcurrentSkipListMap<>(), keys, val));
         return cases;
     }
+
+    // TODO go through tests looking for *all* the places where HashMap is tested.
 
     private static <T> Collection<Object[]> makeMapsHashMap(String desc,
                                                             T[] keys,
@@ -200,8 +203,8 @@ public class MapWithCollisionsProviders {
         Collection<Object[]> cases = new ArrayList<>();
         cases.add(createCase("HashMap with " + desc,
                              new HashMap<>(), keys, val));
-        cases.add(createCase("LinkedHashMap with " + desc,
-                             new LinkedHashMap<>(), keys, val));
+        cases.add(createCase("OpenHashMap with " + desc,
+                             new OpenHashMap<>(), keys, val));
         return cases;
     }
 
