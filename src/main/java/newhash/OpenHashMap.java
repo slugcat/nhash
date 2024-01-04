@@ -33,12 +33,19 @@ package newhash;
 
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.Array;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
+// TODO document sources:
+//  https://github.com/goossaert/hashmap/blob/master/backshift_hashmap.cc seems to do the trick I thought of that with robin-hood don't need to look past the 1st entry with a greater probing distance
+//
+//
 // TODO almost none of the javadoc has been updated.  Mostly it should look like HashMap's
 /**
  * This class implements the {@code Map} interface with a hash table, using
@@ -208,6 +215,8 @@ at least the can't-be-null JEP is previewed.
 public class OpenHashMap<K,V> extends AbstractMap<K,V>
     implements Map<K,V>, java.io.Serializable, Cloneable
 {
+  static final boolean NO_PRIMITIVE = false; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
+
   /**
    * The initial capacity used by the no-args constructor.
    * MUST be a power of two.  The value 32 corresponds to the
@@ -238,7 +247,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
   /**
    * The table, resized as necessary. Length MUST always be a power of two.
    */
-  transient MaskedHashKeyValue/*TODO make null-free: !*/[] table; // non-private to simplify nested class access
+  transient MaskedHashKeyValue/*TODO make null-restricted: ! */[] table; // non-private to simplify nested class access
   /**
    * A linear-probe hash table containing only hashes of keys.  A hashed key at index X will
    * have a matching key at
@@ -265,7 +274,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
   /**
    * Value representing null keys inside tables.
    */
-  static final Object NULL_KEY = new String("NullKey");
+  static final Object NULL_KEY = new NullKeyClass();
 
   /**
    * Use NULL_KEY for key if it is null.
@@ -414,7 +423,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     MaskedHashKeyValue[] tab = table;
     int len = tab.length;
     int i = getIndex(hash, len);
-    int keyHops = 0;
+    int wantedKeyHops = 0;
     while (true) {
       MaskedHashKeyValue item = tab[i];
       if (item.maskedHash == hash && Objects.equals(item.key, k))
@@ -423,10 +432,10 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
         return null;
       final int desiredIndexForCurrentKey = getIndex(item.maskedHash, len);
       final int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
-      if (currKeyHops < keyHops) {
+      if (currKeyHops < wantedKeyHops) {
         return null;
       }
-      keyHops++;
+      wantedKeyHops++;
 
       i = nextKeyIndex(i, len);
     }
@@ -520,38 +529,38 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
    * @see     #get(Object)
    * @see     #containsKey(Object)
    */
+  @SuppressWarnings("unchecked")
   public V put(K key, V value) {
-    return (V) put0(maskNull(key), value, table, true, true, false, true); // TODO @SuppressWarnings("unchecked")
-
+    return (V) put0(maskNull(key), value, table, true, true, false, true);
   }
 
-  // TODO is the overhead of calling this as a separate method plus the checkForDuplicate large
-  //  enough to inline this where it is called?
-  Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean checkKeyCanBePresentAlready, boolean tableMayNeedResizing, boolean isCopying, boolean allowResize) {
-    int hash = maskedKey.hashCode();
-    // A "Hop" is a probe after the initial index determined by the hash
-    // "Inserting" includes the initial item AND an item which has been displaced and thus
-    // needs to be re-inserted
-
-    // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
-    //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
-    //  when table-grows since growing is relatively rare.
-    retryAfterResize: for (;;) {
+  // TODO is the overhead of calling this as a separate method plus the boolean param checks large
+  //  enough to justify inlining this where it is called?
+Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean checkKeyCanBePresentAlready, boolean tableMayNeedResizing, boolean isCopying, boolean allowResize) {
+  int hash = maskedKey.hashCode();
+  // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
+  //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
+  //  when table-grows since growing is relatively rare.
+  retryAfterResize:
+    for (;;) {
       final int len = tab.length;
       int i = getIndex(hash, len);
-      // A "Hop" is a probe after the initial index determined by the hash
-      // "Inserting" includes the initial item AND an item which has been displaced and thus
+      // A "Hop" is a probe after the initial index determined by the hash.
+      // "inserting" includes the initial item AND an item which has been swapped out and thus
       // needs to be re-inserted
       int insertingKeyHops = 0;
 
-      for (MaskedHashKeyValue item; (item = tab[i]).key != null;
+      // TODO look at jmh output size of table.  It seems high.
+      MaskedHashKeyValue item;
+      for (Object key; (key = (item = tab[i]).key) != null;
            i = nextKeyIndex(i, len)) {
-        if (checkKeyCanBePresentAlready && item.maskedHash == hash && item.key.equals(maskedKey)) {
+        if (checkKeyCanBePresentAlready && item.maskedHash == hash && key.equals(maskedKey)) {
           Object oldValue = item.value;
           tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
           return oldValue;
         }
-        int desiredIndexForCurrentKey = getIndex(tab[i].key.hashCode(), len);
+
+        int desiredIndexForCurrentKey = getIndex(hash, len);
         int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
         if (currKeyHops < insertingKeyHops) {
           // TODO Does the "primitive" facility (or the null-restricted value facility) have a
@@ -559,11 +568,10 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
           //  the primitive is not required?  Or will java just optimize away this intermediary
           //  assignment?
           // Swap
-          final MaskedHashKeyValue tmpMaskedHashKeyValue = tab[i];
           tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
-          hash = tmpMaskedHashKeyValue.maskedHash;
-          maskedKey = tmpMaskedHashKeyValue.key;
-          value = tmpMaskedHashKeyValue.value;
+          hash = item.maskedHash;
+          maskedKey = key;
+          value = item.value;
           insertingKeyHops = currKeyHops;
         }
         insertingKeyHops++;
@@ -579,7 +587,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
         }
       }
       tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
-      if (!isCopying) // TODO do something about these boolean params
+      if (!isCopying) // TODO do something about the number of these boolean params
         modCount++;
       if (allowResize)
         size = s;
@@ -587,21 +595,135 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     }
   }
 
-  public String dump() {
-    MaskedHashKeyValue[] tab = table; // TODO remove var if don't make a dump that takes a table param
-    StringBuilder buf = new StringBuilder(tab.length*20);
-    buf.append(STR."size: \{size}  capacity:\{tab.length}\n");
-    List<Object[]> data = new ArrayList<>();
-    data.add(new String[] {"i", "want-i", "hops", "key", "value"});
-    for (int i = 0; i < tab.length; i++) {
-      final int index = getIndex(tab[i].maskedHash, tab.length);
-      data.add(new Object[]{i, index, getHops(i, tab.length,index), tab[i].key, tab[i].value});
-    }
-    printTable(buf, data);
-    return buf.toString();
+  /**
+   * Print stats of the table to the a stream.
+   * @param out a stream
+   */
+  public void dumpSizeStats(PrintStream out){
+    out.printf("%s instance: size: %d%n", this.getClass().getName(), this.size());
+    long size = heapSize();
+    long bytesPer = (this.size != 0) ? size / this.size() : 0;
+    out.printf("    heap size: %d(bytes), avg bytes per entry: %d, table len: %d%n",
+        size, bytesPer, (table != null) ? table.length : 0);
   }
 
-  public static String printTable(StringBuilder buf, List<Object[]> data) {
+  private void printStats(PrintStream out, String label, int[] data){
+    if (data.length > 1) {
+      out.printf("    %s: max: %d, mean: %3.2f, stddev: %3.2f",
+          label, data.length - 1,
+          computeMean(data), computeStdDev(data));
+    } else if (data.length > 0) {
+      out.printf("    %s: max: %d, %s%n",
+          label, data.length - 1,
+          Arrays.toString(data));
+    } else {
+      out.printf("    %s: n/a%n", label);
+    }
+  }
+
+  private double computeStdDev ( int[] hist){
+    double mean = computeMean(hist);
+    double sum = 0.0f;
+    long count = 0L;
+    for (int i = 1; i < hist.length; i++) {
+      count += hist[i];
+      sum += (i - mean) * (i - mean) * hist[i];
+    }
+    return Math.sqrt(sum / (count - 1));
+  }
+
+  private double computeMean ( int[] hist){
+    long sum = 0L;
+    long count = 0;
+    for (int i = 1; i < hist.length; i++) {
+      count += hist[i];
+      sum += i * hist[i];
+    }
+    return (double) sum / (double) count;
+  }
+
+  // Returns a histogram array of the number of rehashs needed to find each key.
+  private long heapSize () {
+    long acc = objectSizeMaybe(this);
+    return acc + objectSizeMaybe(table);
+  }
+
+  private long objectSizeMaybe (Object o){
+    try {
+      return (mObjectSize != null)
+          ? (long) mObjectSize.invoke(null, o)
+          : 0L;
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      return 0L;
+    }
+  }
+
+  private static boolean hasObjectSize = false;
+  private static Method mObjectSize = getObjectSizeMethod();
+
+  private static Method getObjectSizeMethod() {
+    try {
+      Method m = Objects.class.getDeclaredMethod("getObjectSize", Object.class);
+      hasObjectSize = true;
+      return m;
+    } catch (NoSuchMethodException nsme) {
+      return null;
+    }
+  }
+
+  public void dumpAllData(PrintStream out) {
+    dump(out, 0, table.length);
+  }
+
+  public void dumpStats(PrintStream out) {
+    dump(out, 0, 1000);
+  }
+
+  public void dump(PrintStream out, int startIndex, int len) {
+    MaskedHashKeyValue[] tab = table; // TODO remove var if don't make a dump that takes a table param (eg for the traversal table)
+    out.println("size: " + size + " capacity:" + tab.length);
+    dumpSizeStats(out);
+    startIndex = Math.max(startIndex, 0);
+    int[] hopsHistogram = new int[1000];
+    int maxHops = 0;
+    len = Math.min(len, tab.length);
+    List<Object[]> arrayInfo ;
+    if (len > 0) {
+      arrayInfo = new ArrayList<>();
+      arrayInfo.add(new String[] {"i", "want-i", "hops", "hash", "key", "value"});
+    } else {
+      arrayInfo = null;
+    }
+
+    for (int i = 0; i < tab.length; i++) {
+      final int index = getIndex(tab[i].maskedHash, tab.length);
+      final int hops = tab[i].key == null ? 0 : getHops(i, tab.length, index);
+      maxHops = Math.max(maxHops, hops);
+      hopsHistogram[hops]++;
+      if (i >= startIndex && i < startIndex+len) {
+        arrayInfo.add(new Object[]{i, index, hops, tab[i].maskedHash, tab[i].key, tab[i].value});
+      }
+    }
+    final int[] finalHopsHistogram = new int[maxHops+1];
+    System.arraycopy(hopsHistogram, 0, finalHopsHistogram, 0, finalHopsHistogram.length);
+
+    out.println("hopsHistogram");
+    List<Object[]> hopsHistogramTable = new ArrayList<>(1+maxHops);
+    hopsHistogramTable.add(new String[]{"numHops", "count"});
+    for (int i = 0; i < maxHops; i++) {
+      hopsHistogramTable.add(new Integer[]{i, hopsHistogram[i]});
+    }
+    printTabularData(out, hopsHistogramTable);
+    // The empty cells should not count toward the mean since performance get() isn't affected by empty cells.
+    finalHopsHistogram[0] = 0;
+
+    printStats(out, "hopsStats", finalHopsHistogram);
+    if (arrayInfo != null) {
+      printTabularData(out, arrayInfo);
+    }
+  }
+
+  public static void printTabularData(PrintStream out, List<Object[]> data) {
     final int numCols = data.get(0).length;
     int[] maxLengths = new int[numCols];
     for (int col = 0; col < numCols; col++) {
@@ -612,14 +734,13 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     }
     for (int row = 0; row < data.size(); row++) {
       for (int col = 0; col < numCols; col++) {
-        buf.append(String.format("%" + maxLengths[col] + "s ", data.get(row)[col]));
+        out.printf("%" + maxLengths[col] + "s ", data.get(row)[col]);
       }
-      buf.append("\n");
+      out.println();
     }
-    return buf.toString();
   }
 
-  private static int getHops(int i, int len, int desiredIndexForCurrentKey) {
+  static int getHops(int i, int len, int desiredIndexForCurrentKey) {
     return (i + len - desiredIndexForCurrentKey) & (len - 1);
   }
 
@@ -1795,14 +1916,13 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     }
   }
 
-  static final boolean NO_PRIMITIVE = true; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
-  static final /*TODO uncomment primitive*/ class MaskedHashKeyValue {
+  static final primitive class MaskedHashKeyValue {
     final int maskedHash;
     // TODO rename to maskedKey, and parameters.
     final Object key; // TODO make the type be K if possible.  To do so must deal with NULL_KEY
     final Object value; // TODO make the type be V if possible.
 
-    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null)/* TODO uncomment: MaskedHashKeyValue.default*/;
+    static final MaskedHashKeyValue EMPTY = true || /* TODO remove: true || which is there just for debugging*/ NO_PRIMITIVE ? new MaskedHashKeyValue(0, null, null) : MaskedHashKeyValue.default;
 
     MaskedHashKeyValue(int maskedHash, Object key, Object value) {
       this.maskedHash = maskedHash;
@@ -1816,6 +1936,19 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
         Arrays.fill(array, EMPTY);
       }
       return array;
+    }
+  }
+
+  /**
+   * Allows the NULL_KEY to be a unique Object that won't match any other object, and also have a
+   * stable hashCode for all runs.  At minimum this facilitates gathering repeatable statistics about the distribution of hashCodes in the table.
+   * TODO however if this is at all slower than the default Object.hashCode, it should be abandoned.
+   */
+  private static class NullKeyClass {
+    @Override
+    public int hashCode() {
+      // "+2" because MIN_VALUE is apt to be used, and MIN_VALUE+1 could be a sentinel that isn't MIN_VALUE
+      return Integer.MIN_VALUE + 2;
     }
   }
 }
