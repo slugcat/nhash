@@ -215,7 +215,7 @@ at least the can't-be-null JEP is previewed.
 public class OpenHashMap<K,V> extends AbstractMap<K,V>
     implements Map<K,V>, java.io.Serializable, Cloneable
 {
-  static final boolean NO_PRIMITIVE = false; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
+  static final boolean NO_PRIMITIVE = true; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
 
   /**
    * The initial capacity used by the no-args constructor.
@@ -382,7 +382,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
   /**
    * Returns index for Object x.
    */
-  static int getIndex(int hashCode, int length) {
+  static int getIndex(int hashCode, int length) { // TODO rename to just "indexOf"
     // TODO it seems wrong when the size is 2^24 to ignore the 1st byte and when the size is 2^8
     //  to ignore the 1st and 3rd byte.  One would think the size would be included in the
     //  expression in a way to account for this.  It may make sense for the index computation to
@@ -423,8 +423,8 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     MaskedHashKeyValue[] tab = table;
     int len = tab.length;
     int i = getIndex(hash, len);
-    int wantedKeyHops = 0;
-    while (true) {
+
+    for (int wantedKeyHops = 0; ; wantedKeyHops++) {
       MaskedHashKeyValue item = tab[i];
       if (item.maskedHash == hash && Objects.equals(item.key, k))
         return (V) item.value;
@@ -432,11 +432,9 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
         return null;
       final int desiredIndexForCurrentKey = getIndex(item.maskedHash, len);
       final int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
-      if (currKeyHops < wantedKeyHops) {
+      if (wantedKeyHops > currKeyHops ) {
         return null;
       }
-      wantedKeyHops++;
-
       i = nextKeyIndex(i, len);
     }
   }
@@ -503,6 +501,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     MaskedHashKeyValue[] tab = table;
     int len = tab.length;
     int i = getIndex(hash, len);
+    // TODO here (and probably other places as well, should quit when numHops inequality is satisfied (as in get())
     while (true) {
       MaskedHashKeyValue item = tab[i];
       if (item.maskedHash == hash && item.key.equals(k))
@@ -552,25 +551,26 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
 
       // TODO look at jmh output size of table.  It seems high.
       MaskedHashKeyValue item;
-      for (Object key; (key = (item = tab[i]).key) != null;
+      for (Object currKey; (currKey = (item = tab[i]).key) != null;
            i = nextKeyIndex(i, len)) {
-        if (checkKeyCanBePresentAlready && item.maskedHash == hash && key.equals(maskedKey)) {
+        if (checkKeyCanBePresentAlready && item.maskedHash == hash && currKey.equals(maskedKey)) {
           Object oldValue = item.value;
           tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
           return oldValue;
         }
 
-        int desiredIndexForCurrentKey = getIndex(hash, len);
+        final int currHash = item.maskedHash;
+        int desiredIndexForCurrentKey = getIndex(currHash, len);
         int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
-        if (currKeyHops < insertingKeyHops) {
+        if (insertingKeyHops > currKeyHops) {
           // TODO Does the "primitive" facility (or the null-restricted value facility) have a
           //  mechanism to assign some/all of its fields to variables such that making a copy of
           //  the primitive is not required?  Or will java just optimize away this intermediary
           //  assignment?
           // Swap
           tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
-          hash = item.maskedHash;
-          maskedKey = key;
+          hash = currHash;
+          maskedKey = currKey;
           value = item.value;
           insertingKeyHops = currKeyHops;
         }
@@ -603,7 +603,7 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     out.printf("%s instance: size: %d%n", this.getClass().getName(), this.size());
     long size = heapSize();
     long bytesPer = (this.size != 0) ? size / this.size() : 0;
-    out.printf("    heap size: %d(bytes), avg bytes per entry: %d, table len: %d%n",
+    out.printf("    heap size: %d(bytes), avg bytes per entry: %d, table len: %d%n\n",
         size, bytesPer, (table != null) ? table.length : 0);
   }
 
@@ -696,16 +696,20 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     }
 
     for (int i = 0; i < tab.length; i++) {
-      final int index = getIndex(tab[i].maskedHash, tab.length);
-      final int hops = tab[i].key == null ? 0 : getHops(i, tab.length, index);
-      maxHops = Math.max(maxHops, hops);
-      hopsHistogram[hops]++;
+      final int wantedIndex = getIndex(tab[i].maskedHash, tab.length);
+      int hops = -1;
+      if (tab[i].key != null) {
+        hops = getHops(i, tab.length, wantedIndex);
+        maxHops = Math.max(maxHops, hops);
+        hopsHistogram[hops]++;
+      }
       if (i >= startIndex && i < startIndex+len) {
-        arrayInfo.add(new Object[]{i, index, hops, tab[i].maskedHash, tab[i].key, tab[i].value});
+        arrayInfo.add(new Object[]{i, wantedIndex, hops, tab[i].maskedHash, tab[i].key, tab[i].value});
       }
     }
-    final int[] finalHopsHistogram = new int[maxHops+1];
-    System.arraycopy(hopsHistogram, 0, finalHopsHistogram, 0, finalHopsHistogram.length);
+//    TODO use or punt
+//    final int[] finalHopsHistogram = new int[maxHops];
+//    System.arraycopy(hopsHistogram, 0, finalHopsHistogram, 0, finalHopsHistogram.length);
 
     out.println("hopsHistogram");
     List<Object[]> hopsHistogramTable = new ArrayList<>(1+maxHops);
@@ -714,10 +718,12 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
       hopsHistogramTable.add(new Integer[]{i, hopsHistogram[i]});
     }
     printTabularData(out, hopsHistogramTable);
-    // The empty cells should not count toward the mean since performance get() isn't affected by empty cells.
-    finalHopsHistogram[0] = 0;
+//    TODO use or punt
+//    // The empty cells should not count toward the mean since performance get() isn't affected by empty cells.
+//    finalHopsHistogram[0] = 0;
 
-    printStats(out, "hopsStats", finalHopsHistogram);
+    printStats(out, "hopsStats", hopsHistogram/* TODO use or punt: finalHopsHistogram*/); // TODO test hopsHistogram, not currently correct
+    out.println();
     if (arrayInfo != null) {
       printTabularData(out, arrayInfo);
     }
@@ -767,9 +773,9 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     MaskedHashKeyValue[] newTable = MaskedHashKeyValue.createEmptyFilledArray(newCapacity);
 
     for (int j = 0; j < oldLength; j++) {
-      MaskedHashKeyValue oldElem = oldTable[j];
+      MaskedHashKeyValue oldElem = oldTable[j]; // TODO be consistent using either "elem" or "item", drop one of them.
       if (oldElem.key != null) {
-        put0(oldElem.key, oldElem.value, newTable, false, false, true, false);
+        put0(oldElem.key, oldElem.value, newTable, false, false, true, false); // TODO oldElem has hash so don't re-compute it here
       }
     }
     table = newTable;
@@ -1916,13 +1922,13 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     }
   }
 
-  static final primitive class MaskedHashKeyValue {
+  static final /*TODO primitive*/ class MaskedHashKeyValue {
     final int maskedHash;
     // TODO rename to maskedKey, and parameters.
     final Object key; // TODO make the type be K if possible.  To do so must deal with NULL_KEY
     final Object value; // TODO make the type be V if possible.
 
-    static final MaskedHashKeyValue EMPTY = true || /* TODO remove: true || which is there just for debugging*/ NO_PRIMITIVE ? new MaskedHashKeyValue(0, null, null) : MaskedHashKeyValue.default;
+    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null) /* TODO MaskedHashKeyValue.default*/;
 
     MaskedHashKeyValue(int maskedHash, Object key, Object value) {
       this.maskedHash = maskedHash;
@@ -1936,6 +1942,15 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
         Arrays.fill(array, EMPTY);
       }
       return array;
+    }
+
+    @Override
+    public String toString() {
+      return "MaskedHashKeyValue{" +
+          "maskedHash=" + maskedHash +
+          ", key=" + key +
+          ", value=" + value +
+          '}';
     }
   }
 
