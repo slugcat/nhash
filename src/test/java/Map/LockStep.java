@@ -115,8 +115,8 @@ public class LockStep {
 //                Collections.synchronizedNavigableMap(new TreeMap())
             );
 
-            for (int j = 0; j < 10; j++)
-                put(maps, r.nextInt(100), r.nextInt(100));
+            for (int j = 0; j < 10000; j++)
+                put(maps, r.nextInt(20000), r.nextInt(20000));
             removeLastTwo(maps);
         }
     }
