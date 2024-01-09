@@ -215,7 +215,7 @@ at least the can't-be-null JEP is previewed.
 public class OpenHashMap<K,V> extends AbstractMap<K,V>
     implements Map<K,V>, java.io.Serializable, Cloneable
 {
-  static final boolean NO_PRIMITIVE = true; // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
+  static final boolean NO_PRIMITIVE = true; // supporting primitive // TODO remove this and all uses when it is no longer needed to enable compiling and debugging by IntelliJ
 
   /**
    * The initial capacity used by the no-args constructor.
@@ -242,7 +242,7 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
    * because it has to have at least one slot with the key == null
    * in order to avoid infinite loops in get(), put(), remove()
    */
-  private static final int MAXIMUM_CAPACITY = 1 << 29; // TODO don't know what this should be now.  "29" may be influenced by the 2 cells per key/value pair in IdentityHashMap.
+  private static final int MAXIMUM_CAPACITY = 1 << 28; // TODO don't know what this should be now.  IdentityHashMap's "29" may be influenced by the 2 cells per key/value pair in IdentityHashMap.
 
   /**
    * The table, resized as necessary. Length MUST always be a power of two.
@@ -388,15 +388,17 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     //  expression in a way to account for this.  It may make sense for the index computation to
     //  be more elaborate for open addressing.  IdentityHashMap.hash ensures tha hash is even
     //  which this should not do.
-    //  This is taken from HashMap which does not have keys and values in distinct cells.
-    return (hashCode ^ (hashCode >>> 16)) & (length - 1);
+    //  Consider passing a shift such that, at least, when table size is greater than 2^16 fewer
+    //  bits are shifted since they will already be effectively used by the modulo.  The shift would be the table capacity (or that -1 or something) -- Hmm, this is something like (2^32 - length) when length > 2^16.
+    return (hashCode ^ (hashCode >>> 16 )) & (length - 1); // TODO test that using '&' is actually faster than the elvis-op that is used by IdentityHashMap
   }
 
   /**
    * Circularly traverses table of size len.
    */
   private static int nextKeyIndex(int i, int len) {
-    return (i + 1 < len ? i + 1 : 0); // TODO is this faster than using a mask as does https://github.com/TheNumbat/hashtables/blob/main/code/robin_hood_with_deletion.h#L40 ?
+    return (i + 1) & (len - 1); // TODO this didn't work, when it didn't work the max size was causing anomalies, so that could h
+    // return (i + 1 < len ? i + 1 : 0);
   }
 
   /**
@@ -425,12 +427,12 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     int i = getIndex(hash, len);
 
     for (int wantedKeyHops = 0; ; wantedKeyHops++) {
-      MaskedHashKeyValue item = tab[i];
-      if (item.maskedHash == hash && Objects.equals(item.key, k))
-        return (V) item.value;
-      if (item.key == null)
+      int maskedHash = tab[i].maskedHash;
+      if (maskedHash == hash && k.equals(tab[i].key))
+        return (V) tab[i].value;
+      if (tab[i].key == null)
         return null;
-      final int desiredIndexForCurrentKey = getIndex(item.maskedHash, len);
+      final int desiredIndexForCurrentKey = getIndex(maskedHash, len);
       final int currKeyHops = getHops(i, len, desiredIndexForCurrentKey);
       if (wantedKeyHops > currKeyHops ) {
         return null;
@@ -540,7 +542,8 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
   // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
   //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
   //  when table-grows since growing is relatively rare.
-  retryAfterResize:
+  int origIndex = getIndex(hash, tab.length);
+    retryAfterResize:
     for (;;) {
       final int len = tab.length;
       int i = getIndex(hash, len);
@@ -549,10 +552,25 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
       // needs to be re-inserted
       int insertingKeyHops = 0;
 
+      int numKeyNotValue = 0; // TODO for debugging only.  Remove
+
       // TODO look at jmh output size of table.  It seems high.
       MaskedHashKeyValue item;
       for (Object currKey; (currKey = (item = tab[i]).key) != null;
            i = nextKeyIndex(i, len)) {
+        try {
+          if (++numKeyNotValue < 30 && tab[i].key != null && !tab[i].key.equals(tab[i].value)) {
+            System.out.println("capacity:" + tab.length + " size:" + this.size);
+            System.out.println("key!=value  i:" + i + " key:" + tab[i].key + " value:" + tab[i].value);
+          }
+        } catch (NullPointerException e) {
+          System.out.println("capacity:" + tab.length + " size:" + this.size);
+          System.out.println("NPE i:" + i);
+          System.out.println("NPE tab[i]" + tab[i]);
+          System.out.println("NPE tab[i].key" + tab[i].key);
+          throw e;
+        }
+
         if (checkKeyCanBePresentAlready && item.maskedHash == hash && currKey.equals(maskedKey)) {
           Object oldValue = item.value;
           tab[i] = new MaskedHashKeyValue(hash, maskedKey, value);
@@ -575,6 +593,22 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
           insertingKeyHops = currKeyHops;
         }
         insertingKeyHops++;
+
+        // TODO this is for debugging only.  Remove it
+        if (insertingKeyHops > 10) {
+          System.out.println("insertingKeyHops:" + insertingKeyHops + " origIndex:" + origIndex);
+
+          List<Object[]> arrayInfo = new ArrayList<>();
+          arrayInfo.add(new String[]{"i", "want-i", "probes", "hash", "key", "value"});
+          for (int x = origIndex - 1; x < origIndex + 20; x++) {
+            final int wantedIndex = getIndex(tab[x].maskedHash, tab.length);
+            int probes = 1+getHops(x, tab.length, wantedIndex);
+            arrayInfo.add(new Object[]{x, wantedIndex, probes, tab[x].maskedHash, tab[x].key, tab[x].value});
+          }
+          printTabularData(System.out, arrayInfo);
+          System.exit(42);
+        }
+
       }
 
       final int s = size + 1;
@@ -607,14 +641,14 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
         size, bytesPer, (table != null) ? table.length : 0);
   }
 
-  private void printStats(PrintStream out, String label, int[] data){
+  private void printStats(PrintStream out, String label, int[] data, int max){
     if (data.length > 1) {
       out.printf("    %s: max: %d, mean: %3.2f, stddev: %3.2f",
-          label, data.length - 1,
+          label, max > -1 ? max : data.length - 1,
           computeMean(data), computeStdDev(data));
     } else if (data.length > 0) {
       out.printf("    %s: max: %d, %s%n",
-          label, data.length - 1,
+          label, max > -1 ? max : data.length - 1,
           Arrays.toString(data));
     } else {
       out.printf("    %s: n/a%n", label);
@@ -676,56 +710,81 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
   }
 
   public void dumpStats(PrintStream out) {
-    dump(out, 0, 1000);
+    dump(out, 0, 30);
   }
 
   public void dump(PrintStream out, int startIndex, int len) {
-    MaskedHashKeyValue[] tab = table; // TODO remove var if don't make a dump that takes a table param (eg for the traversal table)
-    out.println("size: " + size + " capacity:" + tab.length);
-    dumpSizeStats(out);
-    startIndex = Math.max(startIndex, 0);
-    int[] hopsHistogram = new int[1000];
-    int maxHops = 0;
-    len = Math.min(len, tab.length);
-    List<Object[]> arrayInfo ;
-    if (len > 0) {
-      arrayInfo = new ArrayList<>();
-      arrayInfo.add(new String[] {"i", "want-i", "hops", "hash", "key", "value"});
-    } else {
-      arrayInfo = null;
-    }
-
-    for (int i = 0; i < tab.length; i++) {
-      final int wantedIndex = getIndex(tab[i].maskedHash, tab.length);
-      int hops = -1;
-      if (tab[i].key != null) {
-        hops = getHops(i, tab.length, wantedIndex);
-        maxHops = Math.max(maxHops, hops);
-        hopsHistogram[hops]++;
+    try {
+      MaskedHashKeyValue[] tab = table; // TODO remove var if don't make a dump that takes a table param (eg for the traversal table)
+      out.println("size: " + size + " capacity:" + tab.length);
+      dumpSizeStats(out);
+      startIndex = Math.max(startIndex, 0);
+      int[] probesHistogram = new int[64];
+      int maxProbes = 0;
+      len = Math.min(len, tab.length);
+      List<Object[]> arrayInfo;
+      if (len > 0) {
+        arrayInfo = new ArrayList<>();
+        arrayInfo.add(new String[]{"i", "want-i", "probes", "hash", "key", "value"});
+      } else {
+        arrayInfo = null;
       }
-      if (i >= startIndex && i < startIndex+len) {
-        arrayInfo.add(new Object[]{i, wantedIndex, hops, tab[i].maskedHash, tab[i].key, tab[i].value});
+
+      int maxProbeIndex = -1;
+      int numNonEmptyItems = 0;
+      for (int i = 0; i < tab.length; i++) {
+        final int wantedIndex = getIndex(tab[i].maskedHash, tab.length);
+        int probes = 0;
+        if (tab[i].key != null) {
+          numNonEmptyItems++;
+          probes = 1+getHops(i, tab.length, wantedIndex);
+          if (i % 5_000_000 == 10) {
+            System.out.println("1st loop i:" +i);
+          }
+          if (probes > maxProbes) {
+            maxProbes = probes;
+            maxProbeIndex = i;
+            System.out.println("new maxProbes:" + maxProbes + " index:" + maxProbeIndex);
+            int[] newProbesHistogram = new int[probesHistogram.length * 2];
+            System.arraycopy(probesHistogram, 0, newProbesHistogram, 0, probesHistogram.length);
+            probesHistogram = newProbesHistogram;
+          }
+          probesHistogram[probes]++;
+        }
+        if (i >= startIndex && i < startIndex + len) {
+          arrayInfo.add(new Object[]{i, wantedIndex, probes, tab[i].maskedHash, tab[i].key, tab[i].value});
+        }
       }
-    }
-//    TODO use or punt
-//    final int[] finalHopsHistogram = new int[maxHops];
-//    System.arraycopy(hopsHistogram, 0, finalHopsHistogram, 0, finalHopsHistogram.length);
 
-    out.println("hopsHistogram");
-    List<Object[]> hopsHistogramTable = new ArrayList<>(1+maxHops);
-    hopsHistogramTable.add(new String[]{"numHops", "count"});
-    for (int i = 0; i < maxHops; i++) {
-      hopsHistogramTable.add(new Integer[]{i, hopsHistogram[i]});
-    }
-    printTabularData(out, hopsHistogramTable);
-//    TODO use or punt
-//    // The empty cells should not count toward the mean since performance get() isn't affected by empty cells.
-//    finalHopsHistogram[0] = 0;
+      System.out.println("2st loop");
+      arrayInfo.add(new Object[]{"--", "--", "--", "--", "--", "--"});
+      // Look for fishy stuff around the place where the num-probes is greatest
+      for (int i = Math.max(maxProbeIndex - (maxProbes+2), 0); i < Math.min(maxProbeIndex + maxProbes +2, 300); i++) {
+        final int wantedIndex = getIndex(tab[i].maskedHash, tab.length);
+        int probes = 1+getHops(i, tab.length, wantedIndex);
+        arrayInfo.add(new Object[]{i, wantedIndex, probes, tab[i].maskedHash, tab[i].key, tab[i].value});
+      }
 
-    printStats(out, "hopsStats", hopsHistogram/* TODO use or punt: finalHopsHistogram*/); // TODO test hopsHistogram, not currently correct
-    out.println();
-    if (arrayInfo != null) {
-      printTabularData(out, arrayInfo);
+      out.println("numNonEmptyItems:" + numNonEmptyItems);
+
+      out.println("probesHistogram");
+      List<Object[]> probesHistogramTable = new ArrayList<>(1 + maxProbes);
+      probesHistogramTable.add(new String[]{"numProbes", "count"});
+      System.out.println("3rd loop");
+      for (int i = 0; i < maxProbes; i++) {
+        probesHistogramTable.add(new Integer[]{i, probesHistogram[i]});
+      }
+      System.out.println("probesHistogramTable");
+      printTabularData(out, probesHistogramTable);
+
+      System.out.println("probesStats");
+      printStats(out, "probesStats", probesHistogram, maxProbes);
+      out.println();
+      if (arrayInfo != null) {
+        printTabularData(out, arrayInfo);
+      }
+    } catch (Exception e) {
+      e.printStackTrace(System.out);
     }
   }
 
@@ -759,6 +818,9 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
   private boolean resize(int newCapacity) {
     // TODO comment out assertions
     assert (newCapacity & -newCapacity) == newCapacity : "Should be power of 2";
+
+    // TODO just for debugging, remove
+    System.out.println("Resizing  size:" + this.size + " len:" + this.table.length);
 
     MaskedHashKeyValue[] oldTable = table;
     int oldLength = oldTable.length;
@@ -1922,13 +1984,13 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     }
   }
 
-  static final /*TODO primitive*/ class MaskedHashKeyValue {
+  static final /* TODO uncomment */primitive class MaskedHashKeyValue {
     final int maskedHash;
+    final Object key;
     // TODO rename to maskedKey, and parameters.
-    final Object key; // TODO make the type be K if possible.  To do so must deal with NULL_KEY
-    final Object value; // TODO make the type be V if possible.
+    final Object value;
 
-    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null) /* TODO MaskedHashKeyValue.default*/;
+    static final MaskedHashKeyValue EMPTY = new MaskedHashKeyValue(0, null, null) /* TODO uncomment MaskedHashKeyValue.default*/;
 
     MaskedHashKeyValue(int maskedHash, Object key, Object value) {
       this.maskedHash = maskedHash;
@@ -2055,18 +2117,26 @@ Base Clock: 3.3GHz
 Max. Boost Clock Up to 4.9GHz
 16MB
 
-The original large number is 1/2 capacity, and is large enough to make cache misses happen almost all the time.  There
+The original large number is 1/2 capacity, and is large enough to make cache misses happen almost
+ all the time.  There
 
 
-So goal is to have Maps at least large enough such that (almost) every 'get' will non-cache memory.  Since each fetch will hit a random cache line, and a cache line is 64 bytes the so there are 1048576 / 4 == 262144 a fetch of a 16MB array will almost always (1 out of be a miss.
+So testing goal is to have Maps at least large enough such that (almost) every 'get' will non-cache
+memory.  Since each fetch will hit a random cache line, and a cache line is 64 bytes the so there
+ are 1048576 / 4 == 262144 a fetch of a 16MB array will almost always (1 out of be a miss.
+
 16 * 1048576
 167772166
 16777216  / (4 bytes per field * 3 fields)
 numElementsToFillCache 1398101.33333 Having this many items will fill cache.
 So this * 100 means there will be a cache hit 1/100th of the time.
-Since the table doubles each time it grows, and it grows when it hits 2/3 capacity then after growth it is at 1/3 capacity.  So on average it is at 1/2 capacity.  So make the number of elements in 'get' benchmarks be at 1/2 capacity to demonstrate average behavior for non-presized Maps.
+Since the table doubles each time it grows, and it grows when it hits 2/3 capacity then after
+growth it is at 1/3 capacity.  So on average it is at 1/2 capacity.  So make the number of
+elements in 'get' benchmarks be at 1/2 capacity to demonstrate average behavior for non-presized
+Maps.
 
-So 1.5 * the least power of 2 that can roughly hold numElementsToFillCache will give average performance
+So 1.5 * the least power of 2 that can roughly hold numElementsToFillCache will give average
+performance
 
 1.5 * 134217728 ==
 
@@ -2074,6 +2144,8 @@ So 1.5 * the least power of 2 that can roughly hold numElementsToFillCache will 
 201326592  // This was too big so trying 1/2 of this:
 
 
-A similar result would be achieved by dividing this the number of threads where each thread had a distinct map with distinct keys.  Ideally the number of threads would be such that the none of the threads get context switched.
+A similar result would be achieved by dividing this the number of threads where each thread had a
+ distinct map with distinct keys.  Ideally the number of threads would be such that the none of
+ the threads get context switched.
 
 */
