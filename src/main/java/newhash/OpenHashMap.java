@@ -294,6 +294,8 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     return item.key == NULL_KEY ? 0 : item.maskedHash;
   }
 
+  // TODO consider supporting a LinkedOpenHashMap
+
   /**
    * Constructs a new, empty identity hash map with a default expected
    * maximum size (21).
@@ -424,9 +426,9 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
     final int hash = k.hashCode();
     MaskedHashKeyValue[] tab = table;
     int len = tab.length;
-    int i = getIndex(hash, len);
 
-    for (int wantedKeyHops = 0; ; wantedKeyHops++) {
+    int i = getIndex(hash, len);
+    for (int wantedKeyHops = 0; ; wantedKeyHops++, i = nextKeyIndex(i, len)) {
       int maskedHash = tab[i].maskedHash;
       if (maskedHash == hash && k.equals(tab[i].key))
         return (V) tab[i].value;
@@ -437,7 +439,6 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
       if (wantedKeyHops > currKeyHops ) {
         return null;
       }
-      i = nextKeyIndex(i, len);
     }
   }
 
@@ -532,12 +533,12 @@ public class OpenHashMap<K,V> extends AbstractMap<K,V>
    */
   @SuppressWarnings("unchecked")
   public V put(K key, V value) {
-    return (V) put0(maskNull(key), value, table, true, true, false, true);
+    return (V) putVal(maskNull(key), value, table, true, true, false, true);
   }
 
   // TODO is the overhead of calling this as a separate method plus the boolean param checks large
   //  enough to justify inlining this where it is called?
-Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean checkKeyCanBePresentAlready, boolean tableMayNeedResizing, boolean isCopying, boolean allowResize) {
+Object putVal(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean checkKeyCanBePresentAlready, boolean tableMayNeedResizing, boolean isCopying, boolean allowResize) {
   int hash = maskedKey.hashCode();
   // TODO: decided it was better to optimize for the table-doesn't-grow vs the table-grows case since having
   //  2 loops in the doesn't-grow case seems like it would be more wasteful than redoing work
@@ -554,22 +555,22 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
 
       int numKeyNotValue = 0; // TODO for debugging only.  Remove
 
-      // TODO look at jmh output size of table.  It seems high.
       MaskedHashKeyValue item;
       for (Object currKey; (currKey = (item = tab[i]).key) != null;
            i = nextKeyIndex(i, len)) {
-        try {
-          if (++numKeyNotValue < 30 && tab[i].key != null && !tab[i].key.equals(tab[i].value)) {
-            System.out.println("capacity:" + tab.length + " size:" + this.size);
-            System.out.println("key!=value  i:" + i + " key:" + tab[i].key + " value:" + tab[i].value);
-          }
-        } catch (NullPointerException e) {
-          System.out.println("capacity:" + tab.length + " size:" + this.size);
-          System.out.println("NPE i:" + i);
-          System.out.println("NPE tab[i]" + tab[i]);
-          System.out.println("NPE tab[i].key" + tab[i].key);
-          throw e;
-        }
+        // TODO look at jmh output size of table.  It seems high.
+//        try {
+//          if (++numKeyNotValue < 30 && tab[i].key != null && !tab[i].key.equals(tab[i].value)) {
+//            System.out.println("capacity:" + tab.length + " size:" + this.size);
+//            System.out.println("key!=value  i:" + i + " key:" + tab[i].key + " value:" + tab[i].value);
+//          }
+//        } catch (NullPointerException e) {
+//          System.out.println("capacity:" + tab.length + " size:" + this.size);
+//          System.out.println("NPE i:" + i);
+//          System.out.println("NPE tab[i]" + tab[i]);
+//          System.out.println("NPE tab[i].key" + tab[i].key);
+//          throw e;
+//        }
 
         if (checkKeyCanBePresentAlready && item.maskedHash == hash && currKey.equals(maskedKey)) {
           Object oldValue = item.value;
@@ -680,6 +681,10 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
   private long heapSize () {
     long acc = objectSizeMaybe(this);
     return acc + objectSizeMaybe(table);
+    // TODO when table.length == 262144 objectSizeMaybe(table) returns 4194320.
+    //  (4194320 / 262144) == 16.  16 / 3 fields == 5 bytes per field instead of 4.
+    //  I'm hoping that the final version of null-restricted Value objects this will be closer to 4.
+    //  The Object overhead of table should be negligible for such a large table.
   }
 
   private long objectSizeMaybe (Object o){
@@ -837,7 +842,7 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     for (int j = 0; j < oldLength; j++) {
       MaskedHashKeyValue oldElem = oldTable[j]; // TODO be consistent using either "elem" or "item", drop one of them.
       if (oldElem.key != null) {
-        put0(oldElem.key, oldElem.value, newTable, false, false, true, false); // TODO oldElem has hash so don't re-compute it here
+        putVal(oldElem.key, oldElem.value, newTable, false, false, true, false); // TODO oldElem has hash so don't re-compute it here
       }
     }
     table = newTable;
@@ -1678,7 +1683,7 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
   private void putForCreate(K key, V value)
       throws java.io.StreamCorruptedException
   {
-    if (put0(maskNull(key), value, table, true, false, true, true) == null
+    if (putVal(maskNull(key), value, table, true, false, true, true) == null
         && containsKey(unmaskNull(key))) {
       throw new java.io.StreamCorruptedException();
     }
@@ -1984,7 +1989,7 @@ Object put0(Object maskedKey, Object value, MaskedHashKeyValue[] tab, boolean ch
     }
   }
 
-  static final /* TODO uncomment */primitive class MaskedHashKeyValue {
+  static final /* TODO uncomment primitive*/ class MaskedHashKeyValue { // TODO restrict type by adding <K,V>
     final int maskedHash;
     final Object key;
     // TODO rename to maskedKey, and parameters.
@@ -2098,12 +2103,14 @@ Reconsider the computation of the hash modulo equivalent. The current one does a
 //  distinct keys (with the same content) to show the benefit (at least vs
 //  future potential implementations of comparing with key's hashcode 1st, as
 //  does the proposed implementation.  aOnly run one Map implementation at a
-//  time, in multiple threads.  In this way the impact of the cache effeciency
+//  time, in multiple threads.  In this way the impact of the cache efficiency
 //  of an implementation for other threads is accounted for.  That is a more
 //  cache-efficient implementation will allow other threads more cache for
 //  their memory needs.
 
 // TODO I'm concerned that using Integers may allow the jvm to optimize the equals comparison such that it won't indirect off the Integer object (though I don't see how it could do this).
+
+// TODO change indent to be 4 spaces
 
 /* TODO document computer specs:
 L1 Cache: 512KB
